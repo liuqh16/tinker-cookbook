@@ -26,7 +26,7 @@ class CLIConfig:
     load_checkpoint_path: str | None = None
 
     # Environment configuration
-    env: str = "arithmetic"  # Options: arithmetic, math, polaris, deepmath, gsm8k
+    env: str = "arithmetic"  # Options: arithmetic, math, polaris, deepmath, gsm8k, countdown
     seed: int = 0  # Random seed for data shuffling
 
     # Training hyperparameters
@@ -79,7 +79,7 @@ def get_dataset_builder(
             include_fewshot=True,
             group_size=group_size,
         )
-    elif env in ["math", "polaris", "deepmath", "gsm8k"]:
+    elif env in ["math", "polaris", "deepmath", "gsm8k", "countdown"]:
         return math_env.get_math_dataset_builder(
             dataset_name=env,
             batch_size=batch_size,

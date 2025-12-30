@@ -404,12 +404,171 @@ class Gsm8kDatasetBuilder(RLDatasetBuilder):
         return (datasets[0], datasets[1])
 
 
+class CountdownEnv(ProblemEnv):
+    """Environment for Countdown number game problems."""
+
+    def __init__(
+        self,
+        numbers: list[int],
+        target: int,
+        renderer: renderers.Renderer,
+        convo_prefix: list[renderers.Message] | None = None,
+    ):
+        super().__init__(renderer, convo_prefix)
+        self.numbers = numbers
+        self.target = target
+
+    def get_question(self) -> str:
+        query = f"""Using the numbers {self.numbers}, create an equation that equals {self.target}.
+You can use basic arithmetic operations (+, -, *, /) and each number can only be used once.
+Show your work in <think> </think> tags. And return the final equation and answer in <answer> </answer> tags,
+for example <answer> (1 + 2) / 3 * 4 = 4 </answer>."""
+        return query
+
+    def check_format(self, sample_str: str) -> bool:
+        """Check if the response has valid <answer> tags."""
+        match = re.search(r"<answer>(.*?)</answer>", sample_str, re.DOTALL)
+        return match is not None
+
+    def check_answer(self, sample_str: str) -> bool:
+        """Check if the equation is correct using Countdown rules."""
+        try:
+            # Extract the answer part
+            match = re.search(r"<answer>(.*?)</answer>", sample_str, re.DOTALL)
+            if match is None:
+                return False
+
+            equation = match.group(1).strip()
+            if "=" in equation:
+                equation = equation.split("=")[0]
+
+            # Extract all numbers from the equation
+            used_numbers = [int(n) for n in re.findall(r"\d+", equation)]
+
+            # Check if all numbers are used exactly once
+            if sorted(used_numbers) != sorted(self.numbers):
+                return False
+
+            # Check for disallowed characters
+            allowed_pattern = r"^[\d+\-*/().\s]+$"
+            if not re.match(allowed_pattern, equation):
+                return False
+
+            # Evaluate the equation
+            result = eval(equation, {"__builtins__": None}, {})
+
+            # Check if result matches target
+            return abs(float(result) - float(self.target)) < 1e-5
+
+        except Exception:
+            return False
+
+    def get_reference_answer(self) -> str:
+        return str(self.target)
+
+
+class CountdownDataset(RLDataset):
+    """Dataset for Countdown number game problems."""
+
+    def __init__(
+        self,
+        batch_size: int,
+        group_size: int,
+        renderer: renderers.Renderer,
+        convo_prefix: list[renderers.Message] | None = None,
+        split: Literal["train", "test"] = "train",
+        seed: int = 0,
+    ):
+        # Load the countdown dataset
+        self.ds = load_dataset("Jiayi-Pan/Countdown-Tasks-3to4", split=split)
+        if split == "train":
+            self.ds = self.ds.shuffle(seed=seed)
+        self.batch_size = batch_size
+        self.group_size = group_size if split == "train" else 1
+        self.renderer = renderer
+        self.convo_prefix = convo_prefix
+
+    def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
+        batch_start = index * self.batch_size
+        batch_end = min((index + 1) * self.batch_size, len(self.ds))
+        assert batch_start < batch_end, "Incorrect batch size"
+        return [
+            builder
+            for row in self.ds.select(range(batch_start, batch_end))
+            if (builder := self._make_env_group_builder(row, self.group_size)) is not None  # pyright: ignore[reportArgumentType]
+        ]
+
+    def __len__(self) -> int:
+        return math.ceil(len(self.ds) / self.batch_size)
+
+    def _make_env_group_builder(
+        self, x: dict[str, any], group_size: int
+    ) -> ProblemGroupBuilder | None:
+        try:
+            numbers = x["nums"]
+            target = x.get("target") or x.get("response")
+            if not numbers or target is None:
+                logger.warning(f"Missing numbers or target in row: {x}")
+                return None
+            return ProblemGroupBuilder(
+                env_thunk=partial(
+                    CountdownEnv, numbers, target, self.renderer, convo_prefix=self.convo_prefix
+                ),
+                num_envs=group_size,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to parse Countdown row: {e}")
+            return None
+
+
+@chz.chz
+class CountdownDatasetBuilder(RLDatasetBuilder):
+    batch_size: int
+    model_name_for_tokenizer: str
+    renderer_name: str
+    group_size: int
+    convo_prefix: list[renderers.Message] | None = None
+    seed: int = 0
+
+    async def __call__(self) -> tuple[CountdownDataset, CountdownDataset | None]:
+        tokenizer = get_tokenizer(self.model_name_for_tokenizer)
+        renderer = renderers.get_renderer(self.renderer_name, tokenizer=tokenizer)
+
+        # Create train dataset
+        train_dataset = CountdownDataset(
+            batch_size=self.batch_size,
+            group_size=self.group_size,
+            renderer=renderer,
+            convo_prefix=self.convo_prefix,
+            split="train",
+            seed=self.seed,
+        )
+
+        # Try to create test dataset, return None if it doesn't exist
+        try:
+            test_dataset = CountdownDataset(
+                batch_size=self.batch_size,
+                group_size=self.group_size,
+                renderer=renderer,
+                convo_prefix=self.convo_prefix,
+                split="test",
+                seed=self.seed,
+            )
+        except ValueError:
+            # No test split available
+            logger.warning("No test split found for Countdown dataset, using None")
+            test_dataset = None
+
+        return (train_dataset, test_dataset)
+
+
 # Populate the dataset builder map after all classes are defined
 DATASET_BUILDER_MAP = {
     "math": MathDatasetBuilder,
     "polaris": PolarisDatasetBuilder,
     "deepmath": DeepMathDatasetBuilder,
     "gsm8k": Gsm8kDatasetBuilder,
+    "countdown": CountdownDatasetBuilder,
 }
 
 
