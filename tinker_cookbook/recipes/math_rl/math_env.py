@@ -320,6 +320,56 @@ class DeepMathDatasetBuilder(RLDatasetBuilder):
         ), None
 
 
+class DapoMath17kDataset(MathDataset):
+    def __init__(
+        self,
+        batch_size: int,
+        group_size: int,
+        renderer: renderers.Renderer,
+        convo_prefix: list[renderers.Message] | None = None,
+        seed: int = 0,
+    ):
+        # Don't call super().__init__ since we're overriding the dataset loading
+        self.ds = load_dataset("open-r1/DAPO-Math-17k-Processed", split="train").shuffle(seed=seed)
+        self.batch_size = batch_size
+        self.group_size = group_size
+        self.renderer = renderer
+        self.convo_prefix = convo_prefix
+
+    def _make_env_group_builder(
+        self, x: dict[str, str], group_size: int
+    ) -> ProblemGroupBuilder | None:
+        problem = x.get("prompt", "")
+        answer = x.get("solution", "")
+        if not (problem and answer):
+            return None
+        return ProblemGroupBuilder(
+            env_thunk=partial(
+                MathEnv, problem, answer, self.renderer, convo_prefix=self.convo_prefix
+            ),
+            num_envs=group_size,
+            dataset_name="dapomath17k",
+        )
+
+
+@chz.chz
+class DapoMath17kDatasetBuilder(RLDatasetBuilder):
+    batch_size: int
+    model_name_for_tokenizer: str
+    renderer_name: str
+    group_size: int
+    seed: int = 0
+
+    async def __call__(self) -> tuple[DapoMath17kDataset, None]:
+        tokenizer = get_tokenizer(self.model_name_for_tokenizer)
+        return DapoMath17kDataset(
+            batch_size=self.batch_size,
+            group_size=self.group_size,
+            renderer=renderers.get_renderer(self.renderer_name, tokenizer=tokenizer),
+            seed=self.seed,
+        ), None
+
+
 class Gsm8kDataset(RLDataset):
     def __init__(
         self,
@@ -569,6 +619,7 @@ DATASET_BUILDER_MAP = {
     "deepmath": DeepMathDatasetBuilder,
     "gsm8k": Gsm8kDatasetBuilder,
     "countdown": CountdownDatasetBuilder,
+    "dapomath17k": DapoMath17kDatasetBuilder,
 }
 
 
